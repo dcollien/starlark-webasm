@@ -27,7 +27,11 @@ func convertToStarlarkValue(value js.Value) starlark.Value {
 	case js.TypeBoolean:
 		return starlark.Bool(value.Bool())
 	case js.TypeNumber:
-		return starlark.Float(value.Float())
+		floatVal := value.Float()
+		if floatVal == float64(int(floatVal)) {
+			return starlark.MakeInt(value.Int())
+		}
+		return starlark.Float(floatVal)
 	case js.TypeString:
 		return starlark.String(value.String())
 	case js.TypeObject:
@@ -50,6 +54,35 @@ func convertToStarlarkValue(value js.Value) starlark.Value {
 		}
 	default:
 		return starlark.None
+	}
+}
+
+func convertToJSValue(value starlark.Value) js.Value {
+	switch v := value.(type) {
+	case starlark.Bool:
+		return js.ValueOf(bool(v))
+	case starlark.Float:
+		return js.ValueOf(float64(v))
+	case starlark.String:
+		return js.ValueOf(string(v))
+	case starlark.Int:
+		intVal, _ := v.Int64()
+		return js.ValueOf(intVal)
+	case *starlark.List:
+		array := js.Global().Get("Array").New(v.Len())
+		for i := 0; i < v.Len(); i++ {
+			array.SetIndex(i, convertToJSValue(v.Index(i)))
+		}
+		return array
+	case *starlark.Dict:
+		obj := js.Global().Get("Object").New()
+		for _, item := range v.Items() {
+			key := item[0].(starlark.String)
+			obj.Set(string(key), convertToJSValue(item[1]))
+		}
+		return obj
+	default:
+		return js.Null()
 	}
 }
 
@@ -86,11 +119,12 @@ func getStarlarkRunner() js.Func {
 			return map[string]interface{}{"error": err.Error()}
 		}
 		// Call the Starlark function from Go.
-		if _, err := starlark.Call(thread, mainFn, funcArgs, nil); err != nil {
+		result, err := starlark.Call(thread, mainFn, funcArgs, nil)
+		if err != nil {
 			err := fmt.Errorf("Error: failed to execute the starlark code. Error: %q", err)
 			return map[string]interface{}{"error": err.Error()}
 		}
-		return map[string]interface{}{"message": output.String()}
+		return map[string]interface{}{"message": output.String(), "returnValue": convertToJSValue(result)}
 	})
 }
 
