@@ -22,13 +22,55 @@ import (
 	"go.starlark.net/starlark"
 )
 
+func convertToStarlarkValue(value js.Value) starlark.Value {
+	switch value.Type() {
+	case js.TypeBoolean:
+		return starlark.Bool(value.Bool())
+	case js.TypeNumber:
+		return starlark.Float(value.Float())
+	case js.TypeString:
+		return starlark.String(value.String())
+	case js.TypeObject:
+		if value.InstanceOf(js.Global().Get("Array")) {
+			list := []starlark.Value{}
+			length := value.Length()
+			for i := 0; i < length; i++ {
+				list = append(list, convertToStarlarkValue(value.Index(i)))
+			}
+			return starlark.NewList(list)
+		} else {
+			dict := starlark.NewDict(value.Length())
+			keys := js.Global().Get("Object").Call("keys", value)
+			length := keys.Length()
+			for i := 0; i < length; i++ {
+				key := keys.Index(i).String()
+				dict.SetKey(starlark.String(key), convertToStarlarkValue(value.Get(key)))
+			}
+			return dict
+		}
+	default:
+		return starlark.None
+	}
+}
+
 func getStarlarkRunner() js.Func {
 	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) != 1 {
-			err := fmt.Errorf("Error: expected there to be exactly one argument with the source code. Actual len(args) %d args %+v", len(args), args)
+		if len(args) < 1 {
+			err := fmt.Errorf("Error: expected at least one argument with the source code. Actual len(args) %d args %+v", len(args), args)
 			return map[string]interface{}{"error": err.Error()}
 		}
 		starlark_code := args[0].String()
+		funcName := "main"
+		if len(args) > 1 {
+			funcName = args[1].String()
+		}
+		funcArgs := []starlark.Value{}
+		if len(args) > 2 {
+			for _, arg := range args[2:] {
+				funcArgs = append(funcArgs, convertToStarlarkValue(arg))
+			}
+		}
+
 		output := strings.Builder{}
 		thread := &starlark.Thread{Name: "js-go-starlark-thread", Print: func(_ *starlark.Thread, msg string) {
 			output.WriteString(msg + "\n")
@@ -38,13 +80,13 @@ func getStarlarkRunner() js.Func {
 			err := fmt.Errorf("Error: failed to evaluate the starlark code. Error: %q", err)
 			return map[string]interface{}{"error": err.Error()}
 		}
-		mainFn, ok := globals["main"]
+		mainFn, ok := globals[funcName]
 		if !ok {
-			err := fmt.Errorf("Error: the main function is missing from the starlark code.")
+			err := fmt.Errorf("Error: the function %q is missing from the starlark code.", funcName)
 			return map[string]interface{}{"error": err.Error()}
 		}
-		// Call the Starlark main function from Go.
-		if _, err := starlark.Call(thread, mainFn, nil, nil); err != nil {
+		// Call the Starlark function from Go.
+		if _, err := starlark.Call(thread, mainFn, funcArgs, nil); err != nil {
 			err := fmt.Errorf("Error: failed to execute the starlark code. Error: %q", err)
 			return map[string]interface{}{"error": err.Error()}
 		}
